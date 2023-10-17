@@ -14,12 +14,13 @@ class MySqlGateway():
             cursor.execute(sql, args)
             return  cursor.fetchall()
 
-    def __execute_transaction__(self, sql: str, data: Tuple) -> bool:
+    def __execute_transaction__(self, sql: str, data: Tuple) -> int:
         with self.mysql_hook.get_conn() as conn:
             cursor = conn.cursor()
             cursor.execute(sql, data)
+            id = cursor.lastrowid
             conn.commit()
-            return True
+            return id
 
     def get_project_by_id(self, project_id: int):
         sql = f"SELECT P.id, P.language, P.name, R.id, R.project_repository, R.branch, R.username, R.password FROM Project AS P JOIN Repository AS R ON P.id_repository = R.id WHERE P.id ={project_id}"
@@ -58,7 +59,7 @@ class MySqlGateway():
         sql = f"SELECT * FROM Version WHERE id_project={id_project} ORDER BY id DESC LIMIT 0, 1"
         myresult = self.__execute_query__(sql)
         if len(myresult) > 0:
-            return model.version(myresult[0][0], myresult[0][1], str(myresult[0][2]), myresult[0][3], None, None)
+            return model.version(myresult[0][0], myresult[0][1], str(myresult[0][2]), myresult[0][3])
         else:
             return None
     
@@ -71,16 +72,24 @@ class MySqlGateway():
             raise SettingsException("Versione di Arcan non trovata")
 
     def get_versions_list(self, arcan_version_id: str, limit: int):
-        sql = f"SELECT T.id, T.id_github, T.date, T.id_project, D.id FROM (SELECT DISTINCT * FROM Version AS V WHERE NOT EXISTS ( SELECT * FROM Analysis as A2 WHERE A2.project_version = V.id AND A2.arcan_version = {arcan_version_id}) LIMIT {limit}) AS T LEFT JOIN DependencyGraph AS D ON D.project_version = T.id"
+        sql = f"SELECT V.id, V.id_github, V.date, V.id_project FROM Version AS V WHERE V.id NOT IN ( SELECT A2.project_version FROM Analysis as A2 WHERE A2.project_version = V.id AND A2.arcan_version = {arcan_version_id}) LIMIT {limit}"
         myresult = self.__execute_query__(sql)
         version_list = []
         if len(myresult) > 0:
             for item in myresult:
-                version_list.append(model.version(item[0], item[1], str(item[2]), item[3], None, item[4]))
+                version_list.append(model.version(item[0], item[1], str(item[2]), item[3]))
             return version_list
         else:
             raise SettingsException("Lista versioni vuota")
 
+    def get_dependency_graph_by_version_id(self, version_id: str):
+        sql = f"SELECT file_result FROM DependencyGraph WHERE id = (SELECT file_result FROM Parsing WHERE project_version = {version_id} AND status='Successful' ORDER BY id DESC LIMIT 0, 1)"
+        myresult = self.__execute_query__(sql)
+        if len(myresult) > 0:
+            return myresult[0][0]
+        else:
+            return None
+        
     def add_version(self, version: dict):
         sql = "INSERT INTO Version (id_github, date, id_project) VALUES (%s, %s, %s)"
         data = (version['id_github'], datetime.strptime(version['date'], "%Y-%m-%dT%H:%M:%SZ"), version['project'])
@@ -96,20 +105,24 @@ class MySqlGateway():
         data = (repository['url_github'], repository['branch'], repository['username'], repository['password'])
         self.__execute_transaction__(sql, data)
 
-    def add_dependency_graph(self, dependency_graph: dict):
-        sql = "INSERT INTO DependencyGraph (date_parsing, file_result, project_version) VALUES (%s, %s, %s)"
-        data = (datetime.strptime(dependency_graph['date_parsing'], "%Y-%m-%dT%H:%M:%SZ"), dependency_graph['file_result'], dependency_graph['project_version'])
+    def add_parsing(self, parsing: dict):
+        sql = "INSERT INTO Parsing (date_parsing, project_version, status, file_result) VALUES (%s, %s, %s, %s)"
+        data = (datetime.strptime(parsing['date_parsing'], "%Y-%m-%dT%H:%M:%SZ"), parsing['project_version'], parsing['status'], parsing['file_result'])
         self.__execute_transaction__(sql, data)
 
     def add_analysis(self, analysis:dict):
-        sql = "INSERT INTO Analysis (date_analysis, file_result, project_version, arcan_version) VALUES (%s, %s, %s, %s)"
-        data = (datetime.strptime(analysis['date_analysis'], "%Y-%m-%dT%H:%M:%SZ"), analysis['file_result'], analysis['project_version'], analysis['arcan_version'])
+        sql = "INSERT INTO Analysis (date_analysis, project_version, arcan_version, status, file_result) VALUES (%s, %s, %s, %s, %s)"
+        data = (datetime.strptime(analysis['date_analysis'], "%Y-%m-%dT%H:%M:%SZ"), analysis['project_version'], analysis['arcan_version'], analysis['status'], analysis['file_result'])
         self.__execute_transaction__(sql, data)
 
-    def get_dependency_graph(self, version:dict):
-        sql = f"SELECT * FROM DependencyGraph WHERE project_version={version['id']})"
-        myresult = self.__execute_query__(sql)
-        if len(myresult) > 0:
-            return model.dependency_graph(myresult[0][0], str(myresult[0][1]), myresult[0][2], myresult[0][3])
-        else:
-            return None
+    def add_dependency_graph(self, blob):
+        sql = "INSERT INTO DependencyGraph (file_result) VALUES (%s)"
+        data = (blob, )
+        dependency_graph_id = self.__execute_transaction__(sql, data)
+        return dependency_graph_id
+
+    def add_analysis_result(self, blob):
+        sql = "INSERT INTO AnalysisResult (file_result) VALUES (%s)"
+        data = (blob, )
+        analysis_result_id = self.__execute_transaction__(sql, data)
+        return analysis_result_id
